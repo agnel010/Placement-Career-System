@@ -1,110 +1,102 @@
 import streamlit as st
-import sqlite3
+import bcrypt
+from database import get_connection, init_db
 
-DB_NAME = "placement_system.db"
+init_db()
 
+def hash_password(password: str) -> bytes:
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(rounds=12))
 
-def get_connection():
-    return sqlite3.connect(DB_NAME)
+def verify_password(password: str, hashed: bytes) -> bool:
+    return bcrypt.checkpw(password.encode('utf-8'), hashed)
 
-
-# ================= USER REGISTRATION =================
-def register_user():
-    st.title("📝 User Registration")
-    st.caption("Create a new account to access the placement prediction system")
-
-    with st.form("register_form"):
-        username = st.text_input(
-            "Choose Username",
-            key="register_username"
-        )
-
-        # Custom label to avoid overlap
-        st.markdown("**Password**")
-        password = st.text_input(
-            "",
-            type="password",
-            key="register_password",
-            label_visibility="collapsed"
-        )
-
-        submit = st.form_submit_button("Register")
-
-    if submit:
-        if username.strip() == "" or password.strip() == "":
-            st.error("Username and password cannot be empty")
-            return
-
-        conn = get_connection()
-        cursor = conn.cursor()
-
-        try:
-            cursor.execute(
-                "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-                (username, password, "user")
-            )
-            conn.commit()
-            st.success("✅ Registration successful! Please login.")
-        except sqlite3.IntegrityError:
-            st.error("❌ Username already exists")
-        finally:
-            conn.close()
-
-
-# ================= LOGIN =================
 def login():
-    st.title("🔐 Placement System Login")
-    st.caption("Login to continue")
+    with st.form("login_form", clear_on_submit=True):
+        st.markdown("### 🔐 Login")
 
-    with st.form("login_form"):
-        role = st.selectbox(
-            "Login as",
-            ["User", "Admin"],
-            key="login_role"
-        )
+        role_choice = st.selectbox("Login as", ["Student", "Admin"])
+        username = st.text_input("Username", placeholder="Enter your username")
+        password = st.text_input("Password", type="password", placeholder="Enter your password")
 
-        username = st.text_input(
-            "Username",
-            key="login_username"
-        )
+        submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
 
-        # Custom label to avoid overlap
-        st.markdown("**Password**")
-        password = st.text_input(
-            "",
-            type="password",
-            key="login_password",
-            label_visibility="collapsed"
-        )
+        if submitted:
+            if not username.strip():
+                st.error("Please enter username")
+                return
 
-        submit = st.form_submit_button("Login")
-
-    if submit:
-        # ---------- Admin Login ----------
-        if role == "Admin":
-            if username == "admin" and password == "admin123":
-                st.session_state.logged_in = True
-                st.session_state.role = "admin"
-                st.rerun()
+            if role_choice == "Admin":
+                if username == "admin" and password == "admin2026":
+                    st.session_state.logged_in = True
+                    st.session_state.role = "admin"
+                    st.session_state.username = "admin"
+                    st.session_state.user_id = 0
+                    st.rerun()
+                else:
+                    st.error("Invalid admin credentials")
             else:
-                st.error("❌ Invalid admin credentials")
+                try:
+                    with get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "SELECT id, username, password FROM users WHERE username = ? AND role = 'user'",
+                            (username,)
+                        )
+                        user = cursor.fetchone()
 
-        # ---------- User Login ----------
-        else:
-            conn = get_connection()
-            cursor = conn.cursor()
+                    if user and verify_password(password, user["password"]):
+                        st.session_state.logged_in = True
+                        st.session_state.role = "user"
+                        st.session_state.username = user["username"]
+                        st.session_state.user_id = user["id"]
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password")
+                except Exception as e:
+                    st.error(f"Login error: {str(e)}")
 
-            cursor.execute(
-                "SELECT * FROM users WHERE username=? AND password=? AND role='user'",
-                (username, password)
-            )
-            user = cursor.fetchone()
-            conn.close()
+    st.markdown(
+        "<small style='color: #aaaaaa;'>Forgot password? Contact your administrator.</small>",
+        unsafe_allow_html=True
+    )
 
-            if user:
-                st.session_state.logged_in = True
-                st.session_state.role = "user"
-                st.session_state.username = username
-                st.rerun()
-            else:
-                st.error("❌ Invalid username or password")
+def register_user():
+    with st.form("register_form", clear_on_submit=True):
+        st.markdown("### 📝 Create Account")
+
+        username = st.text_input("Username", max_chars=30, placeholder="Choose a username")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            password = st.text_input("Password", type="password", placeholder="At least 8 characters")
+        with col2:
+            confirm_password = st.text_input("Confirm Password", type="password", placeholder="Repeat password")
+
+        submitted = st.form_submit_button("Create Account", type="primary", use_container_width=True)
+
+        if submitted:
+            if not username.strip() or len(username) < 4:
+                st.error("Username must be at least 4 characters")
+                return
+            if len(password) < 8:
+                st.error("Password must be at least 8 characters")
+                return
+            if password != confirm_password:
+                st.error("Passwords do not match")
+                return
+
+            try:
+                with get_connection() as conn:
+                    cursor = conn.cursor()
+                    hashed_pw = hash_password(password)
+                    cursor.execute(
+                        "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                        (username, hashed_pw, "user")
+                    )
+                    conn.commit()
+
+                st.success("Account created! Please log in.")
+            except sqlite3.IntegrityError:
+                st.error("Username already exists")
+            except Exception as e:
+                st.error(f"Registration failed: {str(e)}")
